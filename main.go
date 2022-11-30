@@ -14,16 +14,28 @@ import (
 func main() {
 	pulumi.Run(func(ctx *pulumi.Context) error {
 
-		kubernetesingressnginx.NewIngressController(ctx, "nginx-ingress", &kubernetesingressnginx.IngressControllerArgs{
+		ingressController, err := kubernetesingressnginx.NewIngressController(ctx, "nginx-ingress", &kubernetesingressnginx.IngressControllerArgs{
 			Controller: kubernetesingressnginx.ControllerArgs{},
 		})
+		if err != nil {
+			return err
+		}
 
 		image, err := docker.NewImage(ctx, "my-image", &docker.ImageArgs{
 			Build: docker.DockerBuildArgs{
 				Context: pulumi.String("./myApp"),
 			},
-			ImageName: pulumi.String("docker.io/dirien/my-image"),
+			ImageName: pulumi.String("docker.io/dirien/my-image:latest"),
 			Registry:  docker.ImageRegistryArgs{},
+		})
+		if err != nil {
+			return err
+		}
+
+		namespace, err := corev1.NewNamespace(ctx, "my-namespace", &corev1.NamespaceArgs{
+			Metadata: metav1.ObjectMetaArgs{
+				Name: pulumi.String("dummy-ns"),
+			},
 		})
 		if err != nil {
 			return err
@@ -31,7 +43,8 @@ func main() {
 
 		v1.NewDeployment(ctx, "dummy-deployment", &v1.DeploymentArgs{
 			Metadata: metav1.ObjectMetaArgs{
-				Name: pulumi.String("dummy-deployment"),
+				Name:      pulumi.String("dummy-deployment"),
+				Namespace: namespace.Metadata.Name(),
 			},
 			Spec: v1.DeploymentSpecArgs{
 				Selector: metav1.LabelSelectorArgs{
@@ -67,11 +80,12 @@ func main() {
 					},
 				},
 			},
-		})
+		}, pulumi.DependsOn([]pulumi.Resource{namespace}))
 
-		corev1.NewService(ctx, "dummy-service", &corev1.ServiceArgs{
+		service, err := corev1.NewService(ctx, "dummy-service", &corev1.ServiceArgs{
 			Metadata: metav1.ObjectMetaArgs{
-				Name: pulumi.String("dummy-service"),
+				Name:      pulumi.String("dummy-service"),
+				Namespace: namespace.Metadata.Name(),
 			},
 			Spec: corev1.ServiceSpecArgs{
 				Selector: pulumi.StringMap{
@@ -85,7 +99,14 @@ func main() {
 				},
 				Type: pulumi.String("ClusterIP"),
 			},
-		})
+		}, pulumi.DependsOn([]pulumi.Resource{namespace}))
+		if err != nil {
+			return err
+		}
+
+		serviceName := service.Metadata.Name().ApplyT(func(name *string) string {
+			return *name
+		}).(pulumi.StringInput)
 
 		v12.NewIngress(ctx, "dummy-ingress", &v12.IngressArgs{
 			Metadata: metav1.ObjectMetaArgs{
@@ -102,7 +123,7 @@ func main() {
 									PathType: pulumi.String("ImplementationSpecific"),
 									Backend: v12.IngressBackendArgs{
 										Service: v12.IngressServiceBackendArgs{
-											Name: pulumi.String("dummy-service"),
+											Name: serviceName,
 											Port: v12.ServiceBackendPortArgs{
 												Number: pulumi.Int(80),
 											},
@@ -114,7 +135,7 @@ func main() {
 					},
 				},
 			},
-		})
+		}, pulumi.DependsOn([]pulumi.Resource{namespace, ingressController}))
 		return nil
 	})
 }
